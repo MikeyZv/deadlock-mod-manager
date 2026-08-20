@@ -43,6 +43,12 @@ pub async fn reset_to_vanilla_internal() -> Result<(), Error> {
     .get_config_manager_mut()
     .apply_vanilla_gameinfo(&game_path, vanilla_content)?;
 
+  // A vanilla reset discards whatever a config mod wrote, so its backup and the
+  // record of it being active would only describe a state that no longer exists.
+  if let Err(error) = mod_manager.forget_config_mod_state() {
+    log::warn!("Failed to clear config mod state after a vanilla reset: {error}");
+  }
+
   log::info!("Successfully reset to vanilla state using API");
   Ok(())
 }

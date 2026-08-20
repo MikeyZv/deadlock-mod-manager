@@ -11,6 +11,7 @@ import { useNavigate, useParams } from "react-router";
 import FavoriteButton from "@/components/mod-browsing/favorite-button";
 import ModButton from "@/components/mod-browsing/mod-button";
 import { InstalledFilesDisplay } from "@/components/mod-detail/installed-files-display";
+import { ConfigModSection } from "@/components/mod-detail/config-mod-section";
 import { InstalledVpksSection } from "@/components/mod-detail/installed-vpks-section";
 import { ModAudioPreview } from "@/components/mod-detail/mod-audio-preview";
 import { ModDependencies } from "@/components/mod-detail/mod-dependencies";
@@ -90,12 +91,12 @@ const Mod = () => {
     mod?.dependencies ?? undefined,
   );
 
+  // A mod added by 1-click keeps only the single file it was handed, and mods are
+  // added once, so its download list arrives here truncated rather than empty.
+  // Backfilling only the empty case left those mods without a version picker, so
+  // take the API's list whenever it knows about more files than the store does.
   useEffect(() => {
-    if (
-      localMod &&
-      availableFiles.length > 0 &&
-      (!localMod.downloads || localMod.downloads.length === 0)
-    ) {
+    if (localMod && availableFiles.length > (localMod.downloads?.length ?? 0)) {
       setModDownloads(localMod.remoteId, availableFiles);
     }
   }, [localMod, availableFiles, setModDownloads]);
@@ -332,6 +333,12 @@ const Mod = () => {
             </CardFooter>
           </Card>
           <ModDependencies dependencies={resolvedDependencies} />
+          {localMod?.configMod && (
+            <ConfigModSection
+              config={localMod.configMod}
+              isInstalled={isInstalled}
+            />
+          )}
           {isInstalled &&
             localMod?.installedVpks &&
             localMod.installedVpks.length > 0 && (
@@ -395,6 +402,7 @@ const Mod = () => {
             downloads={modOptions.downloads}
             onDiskArchiveNames={modOptions.onDiskArchiveNames}
             activeArchiveNames={modOptions.activeArchiveNames}
+            configMod={modOptions.configMod}
           />
         )}
       </div>

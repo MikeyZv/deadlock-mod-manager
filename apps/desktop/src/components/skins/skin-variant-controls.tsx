@@ -46,6 +46,7 @@ export const SkinVariantControls = ({ mod }: SkinVariantControlsProps) => {
       </Tooltip>
       <ModOptionsDialog
         activeArchiveNames={modOptions.activeArchiveNames}
+        configMod={modOptions.configMod}
         downloads={modOptions.downloads}
         isOpen={modOptions.isOpen}
         isSaving={modOptions.isSaving}

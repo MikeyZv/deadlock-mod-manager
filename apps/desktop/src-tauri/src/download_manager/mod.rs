@@ -74,6 +74,16 @@ pub struct DownloadFontsFoundEvent {
   pub fonts: Vec<crate::mod_manager::FontInfo>,
 }
 
+/// Emitted when a downloaded or locally added mod turns out to be a config mod.
+/// Unprefixed because it is not download-specific: the local-add path in
+/// `commands::config_mods` emits the same event.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigModFoundEvent {
+  pub mod_id: String,
+  pub config: crate::mod_manager::ConfigModInfo,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadErrorEvent {
@@ -429,10 +439,13 @@ impl DownloadManager {
     let vpk_manager = VpkManager::new();
     let file_tree_analyzer = FileTreeAnalyzer::new();
     let font_manager = crate::mod_manager::FontManager::new();
+    let config_mod_manager = crate::mod_manager::ConfigModManager::new();
+    let config_stash_dir = crate::mod_manager::ConfigModManager::stash_dir(&task.target_dir);
     let stash_dir = task.target_dir.join("fonts");
     let mut found_font_infos: Vec<crate::mod_manager::FontInfo> = Vec::new();
     let mut seen_font_files = HashSet::new();
     let mut vpk_archive_map: HashMap<String, String> = HashMap::new();
+    let mut scanned_archives: Vec<crate::mod_manager::ScannedArchive> = Vec::new();
 
     let emit_fonts_found = |font_infos: &[crate::mod_manager::FontInfo]| {
       if font_infos.is_empty() {
@@ -450,6 +463,42 @@ impl DownloadManager {
           DownloadFontsFoundEvent {
             mod_id: task.mod_id.clone(),
             fonts: font_infos.to_vec(),
+          },
+        )
+        .ok();
+    };
+
+    // A plain VPK mod must never be reported as a config mod whose versions all failed.
+    let emit_config_mod_found = |scanned: &[crate::mod_manager::ScannedArchive]| {
+      if !scanned.iter().any(|archive| archive.has_gameinfo()) {
+        return;
+      }
+
+      // Recorded so the UI can say why a downloaded file is not offered as a version.
+      if let Err(e) = config_mod_manager.stash_missing_variants(&config_stash_dir, scanned) {
+        log::warn!(
+          "Failed to record unusable config versions for mod {}: {e}",
+          task.mod_id
+        );
+      }
+
+      let Some(config) = crate::mod_manager::ConfigModManager::config_info(&config_stash_dir, None)
+      else {
+        log::warn!("Mod {} has a config but no stashed versions", task.mod_id);
+        return;
+      };
+
+      log::info!(
+        "Mod {} is a config mod with {} version(s), emitting config-mod-found event",
+        task.mod_id,
+        config.variants.len()
+      );
+      app_handle
+        .emit(
+          "config-mod-found",
+          ConfigModFoundEvent {
+            mod_id: task.mod_id.clone(),
+            config,
           },
         )
         .ok();
@@ -558,6 +607,19 @@ impl DownloadManager {
         .unwrap_or("unknown")
         .to_string();
 
+      // Stashed before the extracted directory is cleaned up, so switching between an
+      // author's several config archives later needs no re-download.
+      let scanned = config_mod_manager.scan_archive(&extracted_dir, &archive_name);
+      if scanned.has_gameinfo()
+        && let Err(e) = config_mod_manager.stash_variant(&config_stash_dir, &scanned)
+      {
+        log::warn!(
+          "Failed to stash config version {archive_name} for mod {}: {e}",
+          task.mod_id
+        );
+      }
+      scanned_archives.push(scanned);
+
       match file_tree_analyzer.get_file_tree_from_extracted(&extracted_dir, &archive_name) {
         Ok(file_tree) => {
           log::info!(
@@ -596,6 +658,7 @@ impl DownloadManager {
                 }
 
                 emit_fonts_found(&found_font_infos);
+                emit_config_mod_found(&scanned_archives);
                 Self::cleanup_extracted(&extracted_dir, file_path);
                 return Ok(());
               } else {
@@ -604,6 +667,7 @@ impl DownloadManager {
                   task.mod_id
                 );
                 emit_fonts_found(&found_font_infos);
+                emit_config_mod_found(&scanned_archives);
                 return Ok(());
               }
             }
@@ -624,6 +688,7 @@ impl DownloadManager {
               .ok();
 
             emit_fonts_found(&found_font_infos);
+            emit_config_mod_found(&scanned_archives);
             return Ok(());
           }
 
@@ -719,6 +784,7 @@ impl DownloadManager {
     }
 
     emit_fonts_found(&found_font_infos);
+    emit_config_mod_found(&scanned_archives);
 
     log::info!(
       "Finished processing downloaded files for mod: {}",

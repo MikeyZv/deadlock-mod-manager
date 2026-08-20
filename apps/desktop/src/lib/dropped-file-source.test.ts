@@ -101,4 +101,28 @@ describe("resolveDroppedModSource", () => {
     expect(detectedSource?.kind).toBe("vpk");
     expect(detectedSource?.file.name).toBe("hero_skin.vpk");
   });
+
+  it("detects a bare gameinfo.gi as a config mod", () => {
+    const detectedSource = detectSource([
+      createFile("readme.txt"),
+      createFile("gameinfo.gi"),
+    ]);
+
+    expect(detectedSource?.kind).toBe("config");
+    expect(detectedSource?.file.name).toBe("gameinfo.gi");
+  });
+
+  it("prefers an archive over a loose gameinfo.gi, which the archive may also contain", () => {
+    const detectedSource = detectSource([
+      createFile("gameinfo.gi"),
+      createFile("config_preset.7z"),
+    ]);
+
+    expect(detectedSource?.kind).toBe("archive");
+    expect(detectedSource?.file.name).toBe("config_preset.7z");
+  });
+
+  it("ignores files that merely end in .gi", () => {
+    expect(detectSource([createFile("notes.gi")])).toBeNull();
+  });
 });

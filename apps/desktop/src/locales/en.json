@@ -828,6 +828,8 @@
     "by": "By",
     "backToMods": "Back to Mods",
     "audioMod": "Audio Mod",
+    "configMod": "Config Mod",
+    "configModBadge": "Config",
     "mapBadge": "Map",
     "customBadge": "Custom",
     "installing": "Installing...",
@@ -853,6 +855,7 @@
     "disableSuccess": "Mod disabled successfully",
     "deleteError": "Failed to delete mod",
     "deleteErrorVpkInUse": "Some mod files are currently in use by the game. Please close Deadlock and try again.",
+    "deleteErrorGameRunning": "This mod replaces the game's configuration file, which cannot be changed while Deadlock is running. Please close the game and try again.",
     "disableError": "Failed to disable mod",
     "deleteMod": "Delete Mod",
     "vpkScanAlert": {
@@ -3026,6 +3029,20 @@
     "fetchMissingNotFound": "Some files were not found in their source archives: {{names}}",
     "installedFiles": "Installed files:",
     "installedFilesCount": "{{count}} of {{total}} files enabled"
+  },
+  "configMods": {
+    "sectionTitle": "Game Configuration",
+    "sectionDescription": "This mod replaces the game's gameinfo.gi. Enabling it backs up your current game configuration first, and disabling it restores that backup.",
+    "sectionDescriptionActive": "This mod's gameinfo.gi is currently applied to the game. Disabling it restores the configuration that was in place before.",
+    "replaced": "Disabled “{{name}}”: only one config mod can be applied at a time.",
+    "versions": "Versions",
+    "versionsDescription": "This mod offers more than one configuration. Only one can be applied at a time — use Manage Files to switch.",
+    "activeVersion": "Applied",
+    "unusableVersion": "Unusable",
+    "noGameinfo": "This file does not contain a gameinfo.gi.",
+    "versionPickerDescription": "Choose which configuration to apply. Only one can be active, because they all replace the same gameinfo.gi.",
+    "versionApplied": "Configuration applied",
+    "versionSourceMissing": "No download is available for {{name}}."
   },
   "fileSelector": {
     "selectFilesToInstall": "Select Files to Install: {{modName}}",

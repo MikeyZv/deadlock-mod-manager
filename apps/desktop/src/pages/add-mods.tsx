@@ -91,7 +91,9 @@ const AddMods = () => {
       category: ModCategory.SKINS,
       sourceType: detectedSource.kind,
     });
-    setInitialMeta({ name: baseName || "" });
+    // A bare gameinfo.gi is entirely extension, leaving nothing behind. Offering the
+    // file name beats a blank required field the user has to notice and fill in.
+    setInitialMeta({ name: baseName || getFileBaseName(detectedSource.file) });
     setOpen(true);
   };
 
@@ -258,6 +260,11 @@ const AddMods = () => {
                 <div>
                   <span className='font-medium'>{t("addMods.source")}:</span>{" "}
                   VPK → {getFileName(detected.file)}
+                </div>
+              ) : detected?.kind === "config" ? (
+                <div>
+                  <span className='font-medium'>{t("addMods.source")}:</span>{" "}
+                  {t("mods.configMod")} → {getFileName(detected.file)}
                 </div>
               ) : null}
             </div>

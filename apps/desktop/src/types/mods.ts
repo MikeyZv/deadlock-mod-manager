@@ -28,6 +28,37 @@ export enum ModStatus {
   Error = "error",
 }
 
+/**
+ * One downloaded archive's `gameinfo.gi`. Authors publish several archives per mod
+ * (low spec, high spec, ...); archives without a usable config are kept here too so
+ * the UI can explain why they cannot be applied.
+ */
+export interface ConfigModVariant {
+  archiveName: string;
+  size: number;
+  isValid: boolean;
+  invalidReason: string | null;
+}
+
+/** Every stashed version of a config mod, and which one is applied to the game. */
+export interface ConfigModInfo {
+  variants: ConfigModVariant[];
+  activeVariant: string | null;
+}
+
+export interface ActiveConfigMod {
+  modId: string;
+  modName: string;
+  appliedAt: number;
+  variant: string | null;
+}
+
+export interface ConfigModInstallResult {
+  active: ActiveConfigMod;
+  replacedModId: string | null;
+  config: ConfigModInfo;
+}
+
 export interface LocalMod extends ModDto {
   status: ModStatus;
   downloadedAt?: Date;
@@ -40,6 +71,8 @@ export interface LocalMod extends ModDto {
   detectedHero?: string | null;
   heroOverride?: string | null;
   usesCriticalPaths?: boolean;
+  /** Present when the mod replaces the game's gameinfo.gi instead of shipping VPKs. */
+  configMod?: ConfigModInfo;
 }
 
 export interface DownloadableMod extends Omit<LocalMod, "status"> {

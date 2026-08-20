@@ -103,7 +103,11 @@ import type {
   FilterMode,
   MapQuickFilter,
 } from "@/lib/store/slices/ui";
-import { isInstalledModWithVpks } from "@/lib/mods/installed-helpers";
+import { isConfigMod } from "@/lib/mods/config-mods";
+import {
+  isInstalledModWithVpks,
+  isModEnabled,
+} from "@/lib/mods/installed-helpers";
 import { cn, isModOutdated } from "@/lib/utils";
 import { type LocalMod, ModStatus } from "@/types/mods";
 
@@ -239,6 +243,7 @@ const GridModCard = ({ mod }: { mod: LocalMod }) => {
       downloads={modOptions.downloads}
       onDiskArchiveNames={modOptions.onDiskArchiveNames}
       activeArchiveNames={modOptions.activeArchiveNames}
+      configMod={modOptions.configMod}
     />
   ) : null;
 
@@ -282,6 +287,9 @@ const GridModCard = ({ mod }: { mod: LocalMod }) => {
           <div className='absolute top-2 right-2 flex flex-col gap-1'>
             {mod.isAudio && (
               <Badge variant='secondary'>{t("mods.audio")}</Badge>
+            )}
+            {isConfigMod(mod) && (
+              <Badge variant='secondary'>{t("mods.configModBadge")}</Badge>
             )}
             {mod.remoteUrl?.startsWith("local://") && (
               <Badge
@@ -433,6 +441,11 @@ const ListModCard = ({ mod }: { mod: LocalMod }) => {
                     {t("mods.audio")}
                   </Badge>
                 )}
+                {isConfigMod(mod) && (
+                  <Badge className='text-xs' variant='secondary'>
+                    {t("mods.configModBadge")}
+                  </Badge>
+                )}
                 {mod.remoteUrl?.startsWith("local://") && (
                   <Badge
                     variant='outline'
@@ -460,6 +473,7 @@ const ListModCard = ({ mod }: { mod: LocalMod }) => {
                 <p className='text-muted-foreground text-sm'>
                   {t("mods.by")} {mod.author}{" "}
                   {mod.isAudio && `• ${t("mods.audioMod")}`}
+                  {isConfigMod(mod) && ` • ${t("mods.configMod")}`}
                 </p>
               </div>
             </div>
@@ -518,6 +532,7 @@ const ListModCard = ({ mod }: { mod: LocalMod }) => {
           downloads={modOptions.downloads}
           onDiskArchiveNames={modOptions.onDiskArchiveNames}
           activeArchiveNames={modOptions.activeArchiveNames}
+          configMod={modOptions.configMod}
         />
       )}
     </>
@@ -741,10 +756,8 @@ const MyMods = () => {
 
   const installedMods = getOrderedMods();
 
-  const enabledModsCount = mods.filter(isInstalledModWithVpks).length;
-  const disabledModsCount = mods.filter(
-    (mod) => !isInstalledModWithVpks(mod),
-  ).length;
+  const enabledModsCount = mods.filter(isModEnabled).length;
+  const disabledModsCount = mods.filter((mod) => !isModEnabled(mod)).length;
   const enabledVpkFileCount = mods
     .filter(isInstalledModWithVpks)
     .reduce((sum, mod) => sum + (mod.installedVpks?.length ?? 0), 0);

@@ -1,4 +1,5 @@
 use crate::errors::Error;
+use crate::mod_manager::config_mod_manager::GAMEINFO_FILE_NAME;
 use std::path::{Path, PathBuf};
 
 const SUPPORTED_MOD_EXTENSIONS: [&str; 4] = ["vpk", "zip", "rar", "7z"];
@@ -46,6 +47,17 @@ pub fn validate_dropped_mod_file_path(file_path: &str) -> Result<PathBuf, Error>
 }
 
 fn is_supported_mod_file(path: &Path) -> bool {
+  // A config mod dropped on its own is the whole file name, not an extension: matching
+  // on `.gi` alone would let this command read any file that happens to end in it.
+  let is_bare_gameinfo = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .is_some_and(|name| name.eq_ignore_ascii_case(GAMEINFO_FILE_NAME));
+
+  if is_bare_gameinfo {
+    return true;
+  }
+
   path
     .extension()
     .and_then(|extension| extension.to_str())
@@ -99,6 +111,42 @@ mod tests {
       .expect_err("relative paths should be rejected");
 
     assert!(matches!(error, Error::InvalidInput(message) if message.contains("absolute")));
+  }
+
+  #[test]
+  fn accepts_a_bare_gameinfo_dropped_as_a_config_mod() {
+    let dir = create_temp_dir();
+    let file_path = dir.join("gameinfo.gi");
+    fs::write(&file_path, b"test").expect("test file should be written");
+
+    validate_dropped_mod_file_path(
+      file_path
+        .to_str()
+        .expect("temp file path should be valid utf-8"),
+    )
+    .expect("a bare gameinfo.gi should validate");
+
+    fs::remove_dir_all(&dir).expect("temp dir should be removed");
+  }
+
+  #[test]
+  fn rejects_a_gi_file_that_is_not_a_gameinfo() {
+    let dir = create_temp_dir();
+    let file_path = dir.join("notes.gi");
+    fs::write(&file_path, b"test").expect("test file should be written");
+
+    let error = validate_dropped_mod_file_path(
+      file_path
+        .to_str()
+        .expect("temp file path should be valid utf-8"),
+    )
+    .expect_err("a .gi file other than gameinfo.gi should be rejected");
+
+    assert!(
+      matches!(error, Error::InvalidInput(message) if message.contains("supported mod file"))
+    );
+
+    fs::remove_dir_all(&dir).expect("temp dir should be removed");
   }
 
   #[test]

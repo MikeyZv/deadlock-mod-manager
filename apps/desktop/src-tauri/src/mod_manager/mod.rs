@@ -2,6 +2,7 @@ pub mod addon_analyzer;
 pub mod addons_backup_manager;
 pub mod archive_extractor;
 pub mod autoexec_manager;
+pub mod config_mod_manager;
 pub mod console_log_watcher;
 pub mod file_tree;
 pub mod filesystem_helper;
@@ -18,6 +19,9 @@ pub mod vpk_manifest;
 pub use addon_analyzer::{AddonAnalyzer, AnalyzeAddonsResult};
 pub use addons_backup_manager::AddonsBackup;
 pub use autoexec_manager::{AutoexecConfig, ReadonlySection};
+pub use config_mod_manager::{
+  ConfigModInfo, ConfigModInstallResult, ConfigModManager, ScannedArchive,
+};
 pub use file_tree::ModFileTree;
 pub use font_manager::{FontInfo, FontManager};
 pub use manager::ModManager;

@@ -3,6 +3,7 @@ use crate::errors::Error;
 use crate::mod_manager::{
   addons_backup_manager::AddonsBackupManager,
   autoexec_manager::AutoexecManager,
+  config_mod_manager::{ActiveConfigMod, ConfigModInfo, ConfigModInstallResult, ConfigModManager},
   file_tree::{FileTreeAnalyzer, ModFile, ModFileTree},
   filesystem_helper::FileSystemHelper,
   game_config_manager::GameConfigManager,
@@ -977,6 +978,231 @@ impl ModManager {
     self.filesystem.create_directories(&mods_path)?;
     log::info!("Cleared all mods data: {size} bytes freed");
     Ok(size)
+  }
+
+  /// Apply a config mod: replace the game's `gameinfo.gi` with the one the mod
+  /// shipped, then re-patch the mod manager's search paths so installed VPK mods
+  /// keep loading from the active profile's addons folder.
+  ///
+  /// Only one config mod can be active at a time because they all replace the same
+  /// file; the displaced mod's id is returned so the caller can disable it.
+  ///
+  /// A mod can ship several versions, one per downloaded archive. `variant` names the
+  /// archive to apply; `None` keeps whichever version is already applied, falling back
+  /// to the first usable one.
+  pub fn install_config_mod(
+    &mut self,
+    mod_id: String,
+    mod_name: String,
+    variant: Option<String>,
+    profile_folder: Option<String>,
+  ) -> Result<ConfigModInstallResult, Error> {
+    log::info!("Installing config mod {mod_id} variant {variant:?} (profile: {profile_folder:?})");
+
+    let game_path = self
+      .steam_manager
+      .get_game_path()
+      .ok_or(Error::GamePathNotSet)?
+      .clone();
+
+    let mod_dir = self.get_validated_mod_folder_path(&mod_id)?;
+    let stash_dir = ConfigModManager::stash_dir(&mod_dir);
+
+    let previously_active = self.get_active_config_mod()?;
+    let preferred = previously_active
+      .as_ref()
+      .filter(|active| active.mod_id == mod_id)
+      .and_then(|active| active.variant.as_deref());
+
+    // Resolving validates the chosen version, so a malformed config is rejected while
+    // the working file is still in place.
+    let (variant_name, source) =
+      ConfigModManager::resolve_variant(&stash_dir, variant.as_deref(), preferred)?;
+
+    // Setup creates the pristine `.bak` and the marker block, so it has to happen
+    // before the config mod's file is written over the top.
+    if !self.config_manager.is_game_setup() {
+      self.setup_game_for_mods()?;
+    }
+
+    let gameinfo_path = ConfigModManager::gameinfo_path(&game_path);
+    let config_backup_path = ConfigModManager::config_backup_path(&game_path);
+
+    // Written once, by the first config mod: it holds the user's own gameinfo.gi,
+    // which a later config mod must not overwrite.
+    if !config_backup_path.exists() {
+      log::info!("Backing up pre-config-mod gameinfo.gi to {config_backup_path:?}");
+      std::fs::copy(&gameinfo_path, &config_backup_path)?;
+    }
+
+    let replaced_mod_id = previously_active
+      .map(|active| active.mod_id)
+      .filter(|active_id| active_id != &mod_id);
+
+    std::fs::copy(&source, &gameinfo_path)?;
+
+    if let Err(error) = self.apply_mod_search_paths(&game_path, profile_folder) {
+      log::error!("Failed to patch search paths for config mod {mod_id}: {error}");
+      match std::fs::copy(&config_backup_path, &gameinfo_path) {
+        // The restored file is the pre-config-mod one, so no config mod is applied
+        // any more — including whichever one this install was replacing. The backup
+        // is kept rather than forgotten: it was just copied back over a live
+        // gameinfo.gi, so it still holds the user's own config, and dropping it
+        // would leave the game setup .bak as the only fallback for a later restore.
+        Ok(_) => {
+          if let Err(state_error) = self
+            .get_app_local_data_path()
+            .and_then(|path| ConfigModManager::clear_state(&path))
+          {
+            log::warn!("Failed to clear config mod state after a rollback: {state_error}");
+          }
+        }
+        Err(restore_error) => log::error!(
+          "Failed to restore gameinfo.gi after a failed config mod install: {restore_error}"
+        ),
+      }
+      return Err(error);
+    }
+
+    let active = ActiveConfigMod {
+      mod_id: mod_id.clone(),
+      mod_name,
+      applied_at: ConfigModManager::current_timestamp(),
+      variant: Some(variant_name.clone()),
+    };
+    ConfigModManager::save_state(&self.get_app_local_data_path()?, &active)?;
+
+    let config = ConfigModManager::config_info(&stash_dir, Some(variant_name))
+      .ok_or_else(|| Error::ModInvalid(format!("Config mod {mod_id} has no stashed versions")))?;
+
+    log::info!("Config mod {mod_id} applied successfully");
+    Ok(ConfigModInstallResult {
+      active,
+      replaced_mod_id,
+      config,
+    })
+  }
+
+  /// Everything stashed for a mod, with the applied version marked. `None` for a mod
+  /// that is not a config mod.
+  pub fn get_mod_config_info(&self, mod_id: &str) -> Result<Option<ConfigModInfo>, Error> {
+    let mod_dir = self.get_validated_mod_folder_path(mod_id)?;
+    let active = self
+      .get_active_config_mod()?
+      .filter(|active| active.mod_id == mod_id);
+    let mod_is_active = active.is_some();
+    let active_variant = active.and_then(|active| active.variant);
+
+    let Some(mut config) =
+      ConfigModManager::config_info(&ConfigModManager::stash_dir(&mod_dir), active_variant)
+    else {
+      return Ok(None);
+    };
+
+    ConfigModManager::infer_active_variant(&mut config, mod_is_active);
+    Ok(Some(config))
+  }
+
+  /// Put the pre-config-mod `gameinfo.gi` back and re-patch the search paths.
+  pub fn uninstall_config_mod(
+    &mut self,
+    mod_id: &str,
+    profile_folder: Option<String>,
+  ) -> Result<(), Error> {
+    log::info!("Removing config mod {mod_id} (profile: {profile_folder:?})");
+
+    // Only one config mod owns gameinfo.gi at a time. Restoring for one that was
+    // already displaced would throw away both the applied mod's file and the shared
+    // backup of the user's own config, which is written once and never rewritten.
+    // State that names no mod still restores, so a lost state file stays recoverable.
+    if let Some(active) = self.get_active_config_mod()?
+      && active.mod_id != mod_id {
+        log::info!(
+          "Skipping config restore for {mod_id}: {} is the applied config mod",
+          active.mod_id
+        );
+        return Ok(());
+      }
+
+    let game_path = self
+      .steam_manager
+      .get_game_path()
+      .ok_or(Error::GamePathNotSet)?
+      .clone();
+
+    let gameinfo_path = ConfigModManager::gameinfo_path(&game_path);
+    let config_backup_path = ConfigModManager::config_backup_path(&game_path);
+
+    if config_backup_path.exists() {
+      log::info!("Restoring pre-config-mod gameinfo.gi from {config_backup_path:?}");
+      std::fs::copy(&config_backup_path, &gameinfo_path)?;
+      self.filesystem.remove_file(&config_backup_path)?;
+    } else {
+      // The backup is gone (a vanilla reset deletes it), which would otherwise leave
+      // the config mod's own file in place. The setup backup is the closest stand-in
+      // for what the user had before any config mod.
+      log::warn!("No config mod backup found, falling back to the game setup backup");
+      if let Err(error) = self.config_manager.restore_gameinfo_backup(&game_path) {
+        log::warn!("Game setup backup unusable, re-patching the current gameinfo.gi: {error}");
+      }
+    }
+
+    self.apply_mod_search_paths(&game_path, profile_folder)?;
+    self.clear_active_config_mod_state(mod_id)?;
+
+    log::info!("Config mod {mod_id} removed successfully");
+    Ok(())
+  }
+
+  /// Restore the mod manager's marker block and point it at `profile_folder`.
+  /// A config mod's gameinfo.gi arrives without markers, so the block has to be
+  /// re-inserted before the profile path can be written into it.
+  fn apply_mod_search_paths(
+    &mut self,
+    game_path: &Path,
+    profile_folder: Option<String>,
+  ) -> Result<(), Error> {
+    self
+      .config_manager
+      .modify_search_paths(&ConfigModManager::gameinfo_path(game_path), false)?;
+    self
+      .config_manager
+      .update_mod_path(game_path, profile_folder)
+  }
+
+  pub fn get_active_config_mod(&self) -> Result<Option<ActiveConfigMod>, Error> {
+    Ok(ConfigModManager::load_state(
+      &self.get_app_local_data_path()?,
+    ))
+  }
+
+  /// Drop the persisted state only when it still refers to `mod_id`, so removing a
+  /// mod that was already displaced cannot clear the active one.
+  fn clear_active_config_mod_state(&self, mod_id: &str) -> Result<(), Error> {
+    let app_local_data = self.get_app_local_data_path()?;
+    match ConfigModManager::load_state(&app_local_data) {
+      Some(active) if active.mod_id != mod_id => {
+        log::info!(
+          "Keeping config mod state for {}: {mod_id} is not the active config mod",
+          active.mod_id
+        );
+        Ok(())
+      }
+      _ => ConfigModManager::clear_state(&app_local_data),
+    }
+  }
+
+  /// Forget the applied config mod and its backup, used when the game config is
+  /// reset to vanilla behind the config mod's back.
+  pub fn forget_config_mod_state(&self) -> Result<(), Error> {
+    if let Some(game_path) = self.steam_manager.get_game_path() {
+      let config_backup_path = ConfigModManager::config_backup_path(game_path);
+      if config_backup_path.exists() {
+        self.filesystem.remove_file(&config_backup_path)?;
+      }
+    }
+
+    ConfigModManager::clear_state(&self.get_app_local_data_path()?)
   }
 
   /// Get a reference to the steam manager

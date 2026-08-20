@@ -5,8 +5,15 @@
 // File extension patterns
 export const VPK_PATTERN = /\.vpk$/i;
 export const ARCHIVE_PATTERN = /\.(zip|rar|7z)$/i;
+// Config mods ship a gameinfo.gi. Matched against bare file names and against
+// archive entry paths, which always use forward slashes.
+export const GAMEINFO_PATTERN = /(?:^|\/)gameinfo\.gi$/i;
+export const GAMEINFO_FILE_NAME = "gameinfo.gi";
 export const IMAGE_PATTERN = /\.(png|jpe?g|webp|gif|svg)$/i;
-export const ALL_SUPPORTED_PATTERN = /\.(zip|rar|7z|vpk)$/i;
+// Anchored like GAMEINFO_PATTERN so a file merely ending in "gameinfo.gi", such as
+// mygameinfo.gi, is not treated as one.
+export const ALL_SUPPORTED_PATTERN =
+  /(?:\.(?:zip|rar|7z|vpk)|(?:^|\/)gameinfo\.gi)$/i;
 
 // Supported file formats
 export const SUPPORTED_ARCHIVE_EXTENSIONS = ["zip", "rar", "7z"] as const;
@@ -21,7 +28,7 @@ export const SUPPORTED_IMAGE_EXTENSIONS = [
 
 // MIME types for file input
 export const ACCEPTED_FILE_TYPES =
-  ".vpk,.zip,.rar,.7z,application/zip,application/x-7z-compressed,application/x-rar-compressed";
+  ".vpk,.zip,.rar,.7z,.gi,application/zip,application/x-7z-compressed,application/x-rar-compressed";
 
 export const generateFallbackModSVG = (): string => {
   try {

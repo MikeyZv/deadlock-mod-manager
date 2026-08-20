@@ -1,5 +1,9 @@
 import { BaseDirectory, exists, mkdir, writeFile } from "@tauri-apps/plugin-fs";
-import { ARCHIVE_PATTERN, VPK_PATTERN } from "./file-patterns";
+import {
+  ARCHIVE_PATTERN,
+  GAMEINFO_PATTERN,
+  VPK_PATTERN,
+} from "./file-patterns";
 
 export interface FileSystemEntry {
   name: string;
@@ -23,7 +27,9 @@ export type FileWithPath = File & {
 
 export type DetectedSource =
   | { kind: "archive"; file: File }
-  | { kind: "vpk"; file: File };
+  | { kind: "vpk"; file: File }
+  // A bare gameinfo.gi dropped without an archive around it.
+  | { kind: "config"; file: File };
 
 // A VPK already on disk, placed natively rather than read through the renderer.
 export type StagedSource = { kind: "vpkPath"; path: string; fileName: string };
@@ -99,6 +105,13 @@ export const detectSource = (files: File[]): DetectedSource | null => {
   );
   if (archiveFile) {
     return { kind: "archive", file: archiveFile };
+  }
+
+  const configFile = validFiles.find((file) =>
+    GAMEINFO_PATTERN.test(getFileBaseName(file)),
+  );
+  if (configFile) {
+    return { kind: "config", file: configFile };
   }
 
   return null;

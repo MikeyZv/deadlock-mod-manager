@@ -8,8 +8,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { createLogger } from "@/lib/logger";
+import {
+  configVariants,
+  getModConfigInfo,
+  installConfigMod,
+  isConfigMod,
+  isConfigOnlyMod,
+  resolveConfigVariantNames,
+  stageConfigModVariant,
+} from "@/lib/mods/config-mods";
 import { usePersistedStore } from "@/lib/store";
 import {
+  type ConfigModInfo,
   type LocalMod,
   type ModDownloadItem,
   type ModFile,
@@ -154,7 +164,27 @@ const deriveOriginalsForArchive = (
     .map((f) => f.name);
 };
 
-export const deriveActiveArchiveNames = (mod: LocalMod | null): Set<string> => {
+/**
+ * `resolvedConfig` is the mod's config with its version names already resolved to the
+ * creator's own, for callers that show these names to the user. Callers that only
+ * count the result can leave it out: resolving renames a version, never adds or
+ * removes one.
+ */
+export const deriveActiveArchiveNames = (
+  mod: LocalMod | null,
+  resolvedConfig?: ConfigModInfo,
+): Set<string> => {
+  // A mod whose only content is a config applies exactly one version, and that is the
+  // only thing the picker should show as enabled. One that also ships VPKs is bookkept
+  // by those VPKs like any other mod.
+  const config =
+    mod && !isConfigOnlyMod(mod)
+      ? undefined
+      : (resolvedConfig ?? mod?.configMod);
+  if (config) {
+    return config.activeVariant ? new Set([config.activeVariant]) : new Set();
+  }
+
   const names = new Set<string>();
   for (const f of mod?.installedFileTree?.files ?? []) {
     if (f.is_selected && f.archive_name) names.add(f.archive_name);
@@ -187,20 +217,50 @@ export const useModOptions = (mod: LocalMod | null) => {
   const setActiveVariantArchive = usePersistedStore(
     (state) => state.setActiveVariantArchive,
   );
+  const setConfigMod = usePersistedStore((state) => state.setConfigMod);
+  const setConfigModVariants = usePersistedStore(
+    (state) => state.setConfigModVariants,
+  );
 
   const profileFolder = getActiveProfile()?.folderName ?? null;
   const installedVpks = mod?.installedVpks ?? [];
   const currentOriginalNames = mod ? deriveCurrentOriginalNames(mod) : [];
 
   const downloads = mod?.downloads ?? [];
-  const onDiskArchiveNames = useMemo(
-    () => new Set((mod?.selectedDownloads ?? []).map((d) => d.name)),
-    [mod?.selectedDownloads],
+
+  // `toStashName` turns the user's pick back into the name the backend stashed it
+  // under, so the display name never leaks into a command.
+  const { config: configMod, toStashName } = useMemo(
+    () =>
+      resolveConfigVariantNames(mod?.configMod, mod?.selectedDownloads ?? []),
+    [mod?.configMod, mod?.selectedDownloads],
   );
 
+  // Only a mod whose sole content is a config turns the picker into a version chooser.
+  // One that also ships VPKs keeps the normal file selection, and its config is shown
+  // on the mod's detail page instead.
+  const pickerConfig = mod && isConfigOnlyMod(mod) ? configMod : undefined;
+
+  const onDiskArchiveNames = useMemo(() => {
+    // For a config mod, "on disk" means a version whose config has been stashed;
+    // anything else still has to be fetched before it can be applied.
+    if (pickerConfig) {
+      return new Set(
+        configVariants(pickerConfig).map((variant) => variant.archiveName),
+      );
+    }
+    return new Set((mod?.selectedDownloads ?? []).map((d) => d.name));
+  }, [pickerConfig, mod?.selectedDownloads]);
+
   const activeArchiveNames = useMemo(
-    () => deriveActiveArchiveNames(mod),
-    [mod?.installedFileTree, mod?.activeVariantArchive, mod?.selectedDownloads],
+    () => deriveActiveArchiveNames(mod, configMod),
+    [
+      configMod,
+      mod?.installedVpks,
+      mod?.installedFileTree,
+      mod?.activeVariantArchive,
+      mod?.selectedDownloads,
+    ],
   );
 
   const showButton =
@@ -361,7 +421,90 @@ export const useModOptions = (mod: LocalMod | null) => {
     },
   });
 
-  const open = () => setIsOpen(true);
+  // The picker must show which version is really in the game, and the store's copy
+  // can lag behind or come from a build that recorded less. Only the backend knows
+  // what is stashed and what is applied, so re-read it rather than trusting state.
+  const refreshConfigMod = () => {
+    if (!mod || !isConfigMod(mod)) {
+      return;
+    }
+
+    const modId = mod.remoteId;
+    getModConfigInfo(modId)
+      .then((refreshed) => {
+        if (refreshed) setConfigMod(modId, refreshed);
+      })
+      .catch((error) => {
+        logger
+          .withMetadata({ modId })
+          .withError(error instanceof Error ? error : new Error(String(error)))
+          .warn("Could not refresh config mod versions; using stored state");
+      });
+  };
+
+  // Switching a config mod's version rewrites gameinfo.gi rather than swapping VPKs,
+  // so it goes through the config mod commands instead of `swap_mod_options`.
+  const applyConfigVariantMutation = useMutation<void, Error, string>({
+    mutationFn: async (archiveName) => {
+      if (!mod) {
+        throw new ValidationError("No mod selected");
+      }
+
+      const alreadyStashed = configVariants(configMod).some(
+        (variant) => variant.archiveName === archiveName,
+      );
+
+      if (!alreadyStashed) {
+        const source = downloads.find(
+          (download) => download.name === archiveName,
+        );
+        if (!source) {
+          throw new RuntimeError(
+            t("configMods.versionSourceMissing", { name: archiveName }),
+          );
+        }
+
+        logger
+          .withMetadata({ modId: mod.remoteId, archiveName })
+          .info("Downloading config mod version before applying it");
+
+        const staged = await stageConfigModVariant(
+          mod.remoteId,
+          source.url,
+          source.name,
+        );
+        setConfigModVariants(mod.remoteId, staged);
+      }
+
+      const result = await installConfigMod(
+        mod,
+        profileFolder,
+        toStashName(archiveName),
+      );
+      setConfigMod(mod.remoteId, result.config);
+    },
+    onSuccess: () => {
+      toast.success(t("configMods.versionApplied"));
+      setIsOpen(false);
+    },
+    onError: (error) => {
+      logger
+        .withError(error instanceof Error ? error : new Error(String(error)))
+        .error("Failed to switch config mod version");
+      const message =
+        error instanceof Error ? error.message : t("modOptions.applyError");
+      toast.error(message);
+
+      // A staging failure records the version as unusable, so pull the refreshed
+      // list in to grey it out rather than leaving it looking selectable.
+      refreshConfigMod();
+    },
+  });
+
+  const open = () => {
+    setIsOpen(true);
+    refreshConfigMod();
+  };
   const close = () => setIsOpen(false);
 
   const apply = (
@@ -369,6 +512,14 @@ export const useModOptions = (mod: LocalMod | null) => {
     deselectedArchives: ModDownloadItem[],
     allCheckedArchiveNames: string[],
   ) => {
+    if (mod && isConfigOnlyMod(mod)) {
+      const [chosen] = allCheckedArchiveNames;
+      if (chosen) {
+        applyConfigVariantMutation.mutate(chosen);
+      }
+      return;
+    }
+
     applyMutation.mutate({
       selectedArchives,
       deselectedArchives,
@@ -381,10 +532,11 @@ export const useModOptions = (mod: LocalMod | null) => {
     open,
     close,
     apply,
-    isSaving: applyMutation.isPending,
+    isSaving: applyMutation.isPending || applyConfigVariantMutation.isPending,
     showButton,
     downloads,
     onDiskArchiveNames,
     activeArchiveNames,
+    configMod: pickerConfig,
   };
 };

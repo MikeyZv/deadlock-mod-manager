@@ -12,6 +12,8 @@ import { useTranslation } from "react-i18next";
 import { useProgress } from "@/components/downloads/progress-indicator";
 import { ModCategory } from "@/lib/constants";
 import {
+  GAMEINFO_FILE_NAME,
+  GAMEINFO_PATTERN,
   generateFallbackModSVG,
   IMAGE_PATTERN,
   VPK_PATTERN,
@@ -27,7 +29,8 @@ import {
 } from "@/lib/file-utils";
 import logger from "@/lib/logger";
 import { usePersistedStore } from "@/lib/store";
-import { ModStatus, type ModFileTree } from "@/types/mods";
+import { ModStatus, type ConfigModInfo, type ModFileTree } from "@/types/mods";
+import { isTauriError } from "@/types/tauri";
 
 interface PathBackedFile extends File {
   path?: string;
@@ -85,10 +88,24 @@ export const useModProcessor = () => {
         const buffer = await vpkEntry.async("uint8array");
         const baseName = vpkEntry.name.split("/").pop() || "mod.vpk";
         await writeFileBytes(await join(filesDir, baseName), buffer);
-      } else {
-        await writeFileBytes(await join(modDir, fileBaseName), fileBytes);
-        toast.error(t("addMods.noVpkFound"));
+        return;
       }
+
+      // A config mod archive carries a gameinfo.gi instead of any VPK.
+      const gameinfoEntry = Object.values(zip.files).find(
+        (f) => !f.dir && GAMEINFO_PATTERN.test(f.name),
+      );
+
+      if (gameinfoEntry) {
+        await writeFileBytes(
+          await join(filesDir, GAMEINFO_FILE_NAME),
+          await gameinfoEntry.async("uint8array"),
+        );
+        return;
+      }
+
+      await writeFileBytes(await join(modDir, fileBaseName), fileBytes);
+      toast.error(t("addMods.noVpkFound"));
     } else if (fileName.endsWith(".rar") || fileName.endsWith(".7z")) {
       const format = fileName.split(".").pop()?.toUpperCase();
 
@@ -206,6 +223,11 @@ export const useModProcessor = () => {
             await join(filesDir, fileName),
             await readSourceFileBytes(detectedSource.file),
           );
+        } else if (detectedSource.kind === "config") {
+          await writeFileBytes(
+            await join(filesDir, GAMEINFO_FILE_NAME),
+            await readSourceFileBytes(detectedSource.file),
+          );
         } else {
           await processArchive(detectedSource.file, filesDir, modDir);
         }
@@ -220,14 +242,35 @@ export const useModProcessor = () => {
     }
 
     setProcessing(true, t("addMods.validatingFiles"));
-    const isValid = await validateFiles(filesDir, detectedSource);
-    if (!isValid) {
-      setProcessing(false);
-      return;
+
+    // A config mod ships a gameinfo.gi rather than VPKs, so it is detected before
+    // the VPK validation that would otherwise reject it.
+    const configMod = await invoke<ConfigModInfo | null>(
+      "scan_and_stash_local_mod_config",
+      { modId, filesDir },
+    ).catch((error) => {
+      logger
+        .withMetadata({ filesDir, modId })
+        .withError(error)
+        .warn("Failed to scan local mod for a bundled game config");
+      return null;
+    });
+
+    if (!configMod) {
+      const isValid = await validateFiles(filesDir, detectedSource);
+      if (!isValid) {
+        setProcessing(false);
+        return;
+      }
     }
 
     setProcessing(true, t("addMods.processingFiles"));
     let fileTree: ModFileTree | null = null;
+    let hasVpkFiles = false;
+
+    // An author who bundles VPKs with a config means the two to work together, so
+    // the copy is attempted whether or not a config was found, rather than instead
+    // of it.
     try {
       const activeProfile = getActiveProfile();
       const profileFolder = activeProfile?.folderName ?? null;
@@ -237,6 +280,7 @@ export const useModProcessor = () => {
         profileFolder,
         isMap: category === ModCategory.MAPS,
       });
+      hasVpkFiles = true;
 
       // Scan the extracted files dir for fonts and emit the same event as the
       // download pipeline so the FontInstallDialog appears if any are found.
@@ -256,9 +300,21 @@ export const useModProcessor = () => {
         })) as ModFileTree;
       } catch {}
     } catch (error) {
-      setProcessing(false);
-      toast.error((error as Error)?.message || "Unknown error");
-      return;
+      // `copy_local_mod_vpks` rejects a mod with nothing to copy, and that is the
+      // only thing it raises `invalidInput` for. Expected of a mod whose config is
+      // all it ships; a real failure for anything else.
+      const nothingToCopy =
+        isTauriError(error) && error.kind === "invalidInput";
+
+      if (!configMod || !nothingToCopy) {
+        setProcessing(false);
+        toast.error((error as Error)?.message || "Unknown error");
+        return;
+      }
+
+      logger
+        .withMetadata({ modId })
+        .info("Local config mod ships no VPKs of its own");
     }
 
     setProcessing(true, t("addMods.savingMetadata"));
@@ -317,18 +373,22 @@ export const useModProcessor = () => {
     addMod(modDto, {
       status: ModStatus.Downloaded,
       installedFileTree: fileTree ?? undefined,
+      configMod: configMod ?? undefined,
     });
     setModStatus(modId, ModStatus.Downloaded);
 
-    invoke<HeroDetectionResult>("detect_mod_hero", { modId })
-      .then((result) =>
-        setDetectedHero(
-          modId,
-          resolveDetectedHeroLabel(result),
-          result.usesCriticalPaths,
-        ),
-      )
-      .catch(() => setDetectedHero(modId, null));
+    // Hero detection reads the mod's VPKs, which a config-only mod does not have.
+    if (hasVpkFiles) {
+      invoke<HeroDetectionResult>("detect_mod_hero", { modId })
+        .then((result) =>
+          setDetectedHero(
+            modId,
+            resolveDetectedHeroLabel(result),
+            result.usesCriticalPaths,
+          ),
+        )
+        .catch(() => setDetectedHero(modId, null));
+    }
 
     setProcessing(true, t("addMods.modAddedSuccess"));
     toast.success(t("addMods.addedSuccess", { name: metadata.name }));

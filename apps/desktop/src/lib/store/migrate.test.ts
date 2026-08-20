@@ -149,7 +149,7 @@ describe("safeMigrate", () => {
   it("LATEST_VERSION matches the highest step target", () => {
     const max = Math.max(...MIGRATION_STEPS.map((s) => s.to));
     expect(LATEST_VERSION).toBe(max);
-    expect(LATEST_VERSION).toBe(25);
+    expect(LATEST_VERSION).toBe(26);
   });
 
   it("v25 (themes switch): drops the leftover enabledPlugins.themes entry", () => {
@@ -253,6 +253,86 @@ describe("safeMigrate", () => {
         analyticsEnabled: true,
         hasSeenTelemetryPrompt: true,
       });
+    });
+
+    it("v26 (config mod versions): converts the single-file shape into one version", () => {
+      const state: Record<string, unknown> = {
+        localMods: [
+          {
+            remoteId: "config-preset",
+            configMod: { fileName: "gameinfo.gi", size: 4096 },
+          },
+        ],
+      };
+
+      const result = safeMigrate(state, 25) as Record<string, unknown>;
+      const mods = result.localMods as Array<Record<string, unknown>>;
+
+      expect(mods[0].configMod).toEqual({
+        variants: [
+          {
+            archiveName: "gameinfo.gi",
+            size: 4096,
+            isValid: true,
+            invalidReason: null,
+          },
+        ],
+        activeVariant: null,
+      });
+    });
+
+    it("v26 (config mod versions): converts config mods inside profiles too", () => {
+      const state: Record<string, unknown> = {
+        profiles: {
+          default: {
+            mods: [{ configMod: { fileName: "gameinfo.gi", size: 12 } }],
+          },
+        },
+      };
+
+      const result = safeMigrate(state, 25) as Record<string, unknown>;
+      const profiles = result.profiles as Record<
+        string,
+        { mods: Array<Record<string, unknown>> }
+      >;
+      const migrated = profiles.default.mods[0].configMod as {
+        variants: unknown[];
+      };
+
+      expect(migrated.variants).toHaveLength(1);
+    });
+
+    it("v26 (config mod versions): leaves an already-converted config mod alone", () => {
+      const alreadyNew = {
+        variants: [
+          {
+            archiveName: "low-spec.zip",
+            size: 1,
+            isValid: true,
+            invalidReason: null,
+          },
+        ],
+        activeVariant: "low-spec.zip",
+      };
+      const state: Record<string, unknown> = {
+        localMods: [{ configMod: alreadyNew }],
+      };
+
+      const result = safeMigrate(state, 25) as Record<string, unknown>;
+      const mods = result.localMods as Array<Record<string, unknown>>;
+
+      expect(mods[0].configMod).toEqual(alreadyNew);
+    });
+
+    it("v26 (config mod versions): leaves mods that are not config mods untouched", () => {
+      const state: Record<string, unknown> = {
+        localMods: [{ remoteId: "plain-skin", installedVpks: ["skin.vpk"] }],
+      };
+
+      const result = safeMigrate(state, 25) as Record<string, unknown>;
+      const mods = result.localMods as Array<Record<string, unknown>>;
+
+      expect(mods[0].configMod).toBeUndefined();
     });
   });
 });

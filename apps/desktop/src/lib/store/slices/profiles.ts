@@ -5,7 +5,7 @@ import type { StateCreator } from "zustand";
 import { getMod } from "@/lib/api-client";
 import { getErrorMessage } from "@/lib/errors";
 import logger from "@/lib/logger";
-import { isInstalledModWithVpks } from "@/lib/mods/installed-helpers";
+import { isModEnabled } from "@/lib/mods/installed-helpers";
 import { type LocalMod, ModStatus, type InstalledModInfo } from "@/types/mods";
 import {
   createProfileId,
@@ -681,7 +681,7 @@ export const createProfilesSlice: StateCreator<
 
   getEnabledModsCount: () => {
     const { localMods } = get();
-    return localMods.filter(isInstalledModWithVpks).length;
+    return localMods.filter(isModEnabled).length;
   },
 
   saveCurrentModsToProfile: () => {

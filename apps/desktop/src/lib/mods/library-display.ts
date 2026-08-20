@@ -1,5 +1,5 @@
 import type { LocalMod } from "@/types/mods";
-import { isInstalledModWithVpks } from "./installed-helpers";
+import { isModEnabled } from "./installed-helpers";
 
 export enum ModFilter {
   All = "all",
@@ -13,9 +13,9 @@ export function filterLibraryModsByStatus(
 ): LocalMod[] {
   switch (filter) {
     case ModFilter.Enabled:
-      return mods.filter(isInstalledModWithVpks);
+      return mods.filter(isModEnabled);
     case ModFilter.Disabled:
-      return mods.filter((mod) => !isInstalledModWithVpks(mod));
+      return mods.filter((mod) => !isModEnabled(mod));
     case ModFilter.All:
       return mods;
   }

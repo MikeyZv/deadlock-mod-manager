@@ -5,6 +5,7 @@ import logger from "@/lib/logger";
 import { ModStatusStateMachine } from "@/lib/state-machines/mod-status";
 import {
   type AnalyzeAddonsResult,
+  type ConfigModInfo,
   type LocalMod,
   type ModDownloadItem,
   type ModFileTree,
@@ -62,6 +63,8 @@ export type ModsState = {
   ) => void;
   setModDownloads: (remoteId: string, downloads: ModDownloadItem[]) => void;
   setActiveVariantArchive: (remoteId: string, archiveName: string) => void;
+  setConfigMod: (remoteId: string, config: ConfigModInfo) => void;
+  setConfigModVariants: (remoteId: string, config: ConfigModInfo) => void;
   getModProgress: (remoteId: string) => ModProgress | undefined;
   setAnalysisResult: (result: AnalyzeAddonsResult | null) => void;
   setAnalysisDialogOpen: (open: boolean) => void;
@@ -365,6 +368,52 @@ export const createModsSlice: StateCreator<State, [], [], ModsState> = (
           mod.remoteId === remoteId ? archiveName : mod.activeVariantArchive,
       })),
     })),
+
+  // Applied to every profile: whether a mod is a config mod is a property of its
+  // files, not of the profile it happens to be listed under.
+  setConfigMod: (remoteId: string, config: ConfigModInfo) =>
+    set((state) => {
+      const updateMods = (mods: LocalMod[]) =>
+        mods.map((mod) =>
+          mod.remoteId === remoteId ? { ...mod, configMod: config } : mod,
+        );
+
+      return applyToModsAndAllProfiles(state, updateMods);
+    }),
+
+  // The stashed versions changed, but not which one is in the game. Writers that
+  // only scan or stash files cannot know that, so their null `activeVariant` is an
+  // absence of information rather than evidence; taking it as fact would clear the
+  // applied version until something refreshed it. `setConfigMod` stays the setter
+  // for the backend calls that do know.
+  setConfigModVariants: (remoteId: string, config: ConfigModInfo) =>
+    set((state) => {
+      const updateMods = (mods: LocalMod[]) =>
+        mods.map((mod) => {
+          if (mod.remoteId !== remoteId) {
+            return mod;
+          }
+
+          // A version that is no longer stashed cannot still be applied, and
+          // keeping it would leave the picker pointing at nothing.
+          const previous = mod.configMod?.activeVariant;
+          const stillStashed =
+            previous !== undefined &&
+            previous !== null &&
+            config.variants.some((variant) => variant.archiveName === previous);
+
+          return {
+            ...mod,
+            configMod: {
+              ...config,
+              activeVariant:
+                config.activeVariant ?? (stillStashed ? previous : null),
+            },
+          };
+        });
+
+      return applyToModsAndAllProfiles(state, updateMods);
+    }),
 
   setAnalysisResult: (result) => set({ analysisResult: result }),
   setAnalysisDialogOpen: (open) => set({ analysisDialogOpen: open }),

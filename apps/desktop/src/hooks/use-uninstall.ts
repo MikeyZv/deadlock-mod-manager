@@ -3,6 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { useConfirm } from "@/components/providers/alert-dialog";
 import logger from "@/lib/logger";
+import {
+  hasVpks,
+  isConfigMod,
+  uninstallConfigMod,
+} from "@/lib/mods/config-mods";
 import { usePersistedStore } from "@/lib/store";
 import { type LocalMod, ModStatus } from "@/types/mods";
 import { isTauriError } from "@/types/tauri";
@@ -36,6 +41,24 @@ const useUninstall = () => {
 
       const activeProfile = getActiveProfile();
       const profileFolder = activeProfile?.folderName ?? null;
+
+      // A config mod owns the game's gameinfo.gi, so disabling it means putting the
+      // previous game config back. Deleting it is left to `purge_mod`, which restores
+      // the config before removing the mod's files. A mod that also ships VPKs falls
+      // through afterwards to have those disabled too.
+      if (isConfigMod(mod) && mod.status === ModStatus.Installed && !remove) {
+        logger
+          .withMetadata({ modId: mod.remoteId, profileFolder })
+          .info("Disabling config mod");
+        await uninstallConfigMod(mod.remoteId, profileFolder);
+
+        if (!hasVpks(mod)) {
+          setModStatus(mod.remoteId, ModStatus.Downloaded);
+          setModEnabledInCurrentProfile(mod.remoteId, false);
+          toast.success(t("mods.disableSuccess"));
+          return;
+        }
+      }
 
       if (mod.status === ModStatus.Installed) {
         logger
@@ -89,6 +112,16 @@ const useUninstall = () => {
       if (isTauriError(error) && error.kind === "vpkInUse") {
         toast.error(remove ? t("mods.deleteError") : t("mods.disableError"), {
           description: t("mods.deleteErrorVpkInUse"),
+        });
+        return;
+      }
+
+      // Raised only when the mod being removed owns the game's gameinfo.gi. The
+      // removal was refused before anything was deleted, so it is worth telling
+      // the user it succeeds once the game is closed.
+      if (isTauriError(error) && error.kind === "gameRunning") {
+        toast.error(remove ? t("mods.deleteError") : t("mods.disableError"), {
+          description: t("mods.deleteErrorGameRunning"),
         });
         return;
       }

@@ -4,7 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { useConfirm } from "@/components/providers/alert-dialog";
 import logger from "@/lib/logger";
-import { isInstalledModWithVpks } from "@/lib/mods/installed-helpers";
+import {
+  hasVpks,
+  isConfigMod,
+  uninstallConfigMod,
+} from "@/lib/mods/config-mods";
+import { isModEnabled } from "@/lib/mods/installed-helpers";
 import { usePersistedStore } from "@/lib/store";
 import { ModStatus } from "@/types/mods";
 
@@ -20,7 +25,7 @@ export const useDisableAllMods = () => {
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const enabledMods = mods.filter(isInstalledModWithVpks);
+      const enabledMods = mods.filter(isModEnabled);
       const shouldDisable = await confirm({
         title: t("myMods.disableAllConfirmTitle"),
         body: t("myMods.disableAllConfirmBody", {
@@ -37,11 +42,18 @@ export const useDisableAllMods = () => {
       const profileFolder = activeProfile?.folderName ?? null;
 
       for (const mod of enabledMods) {
-        await invoke("uninstall_mod", {
-          modId: mod.remoteId,
-          vpks: mod.installedVpks ?? [],
-          profileFolder,
-        });
+        // Independent rather than exclusive: a mod can ship both a config and VPKs,
+        // and leaving either half enabled would not be "disabled".
+        if (isConfigMod(mod)) {
+          await uninstallConfigMod(mod.remoteId, profileFolder);
+        }
+        if (hasVpks(mod)) {
+          await invoke("uninstall_mod", {
+            modId: mod.remoteId,
+            vpks: mod.installedVpks ?? [],
+            profileFolder,
+          });
+        }
         setModStatus(mod.remoteId, ModStatus.Downloaded);
         setModEnabledInCurrentProfile(mod.remoteId, false);
       }

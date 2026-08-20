@@ -18,7 +18,7 @@ use crate::download_manager::{DownloadFileDto, DownloadTask};
 
 const ALLOWED_DOWNLOAD_HOSTS: &[&str] = &["gamebanana.com", "deadlockmods.app"];
 
-fn sanitize_archive_name(name: &str) -> Result<String, Error> {
+pub(crate) fn sanitize_archive_name(name: &str) -> Result<String, Error> {
   if name.is_empty() {
     return Err(Error::InvalidInput(
       "Archive name cannot be empty".to_string(),
@@ -36,7 +36,7 @@ fn sanitize_archive_name(name: &str) -> Result<String, Error> {
   }
 }
 
-fn validate_download_url(url: &str) -> Result<(), Error> {
+pub(crate) fn validate_download_url(url: &str) -> Result<(), Error> {
   let parsed = reqwest::Url::parse(url)
     .map_err(|e| Error::InvalidInput(format!("Invalid download URL: {e}")))?;
 
@@ -92,6 +92,10 @@ pub async fn purge_mod(
     let mod_manager = MANAGER.lock().unwrap();
     mod_manager.get_steam_manager().get_game_path().cloned()
   };
+
+  // A config mod owns the game's gameinfo.gi, so the game config has to be put
+  // back before its stashed copy is deleted below.
+  super::config_mods::restore_game_config_if_active(&mod_id, profile_folder.clone())?;
 
   let prepared_font_cleanup = if let Some(game_path) = game_path.as_ref() {
     prepare_font_cleanup(game_path, &mod_id)?

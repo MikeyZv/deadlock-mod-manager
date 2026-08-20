@@ -3,11 +3,17 @@ import { listen } from "@tauri-apps/api/event";
 import { fetch } from "@/lib/fetch";
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
-import { getMod } from "@/lib/api-client";
+import { getMod, getModDownloads } from "@/lib/api-client";
 import { downloadManager } from "@/lib/download/manager";
 import logger from "@/lib/logger";
+import {
+  fileNameFromUrl,
+  GAMEBANANA_MMDL_REGEX,
+  isSameDownload,
+  parseContentDisposition,
+} from "@/lib/mods/download-naming";
 import { usePersistedStore } from "@/lib/store";
-import { ModStatus } from "@/types/mods";
+import { type ModDownloadItem, ModStatus } from "@/types/mods";
 import useInstall from "./use-install";
 
 type DeepLinkData = {
@@ -20,9 +26,6 @@ type FileInfo = {
   name: string;
   size: number;
 };
-
-// Regex for GameBanana download IDs
-const GAMEBANANA_MMDL_REGEX = /\/mmdl\/(\d+)/;
 
 const getFileInfoFromHeaders = async (url: string): Promise<FileInfo> => {
   logger.withMetadata({ url }).info("Fetching file info from headers for URL");
@@ -64,9 +67,18 @@ const getFileInfoFromHeaders = async (url: string): Promise<FileInfo> => {
       extension = ".zip";
     }
 
-    // Generate filename from GameBanana download ID
-    let name = `download${extension}`;
-    if (url.includes("gamebanana.com/mmdl/")) {
+    // GameBanana sends no Content-Disposition and redirects a 1-click link to the
+    // creator's uploaded file, so the URL we land on is where the real name is.
+    // An explicit header still wins where a server bothers to send one.
+    const servedName =
+      parseContentDisposition(
+        response.headers.get("content-disposition") ||
+          response.headers.get("Content-Disposition"),
+      ) ?? fileNameFromUrl(response.url);
+
+    // Fall back to the download ID only when the server names nothing.
+    let name = servedName ?? `download${extension}`;
+    if (!servedName && url.includes("gamebanana.com/mmdl/")) {
       const match = url.match(GAMEBANANA_MMDL_REGEX);
       if (match?.[1]) {
         name = `gamebanana-${match[1]}${extension}`;
@@ -157,9 +169,33 @@ export const useDeepLink = () => {
                 return;
               }
 
-              // Get file info from HTTP headers
               toast.success("Preparing 1-click mod download...");
-              const fileInfo = await getFileInfoFromHeaders(download_url);
+
+              // The creator's file names live on the downloads endpoint rather than
+              // the mod DTO, and are the same names shown everywhere else in the app,
+              // so prefer them over anything derived from the download itself.
+              const creatorFiles = await getModDownloads(modData.remoteId)
+                .then((result) => result.downloads)
+                .catch((error) => {
+                  logger
+                    .withMetadata({ remoteId: modData.remoteId })
+                    .withError(error)
+                    .warn(
+                      "Could not fetch the creator's file list; naming the download from its own headers instead",
+                    );
+                  return [] as ModDownloadItem[];
+                });
+
+              // A published file and a 1-click link use different id spaces
+              // (`/dl/<file>` against `/mmdl/<download>`), so URLs rarely line up;
+              // the name recovered from the download itself is what ties them.
+              const headerInfo = await getFileInfoFromHeaders(download_url);
+              const creatorFile =
+                creatorFiles.find((file) =>
+                  isSameDownload(file.url, download_url),
+                ) ?? creatorFiles.find((file) => file.name === headerInfo.name);
+
+              const fileInfo = creatorFile ?? headerInfo;
 
               const downloadFiles = [
                 {
@@ -172,8 +208,14 @@ export const useDeepLink = () => {
                 },
               ];
 
-              // Add mod to local store with download info
-              addMod(modData, { downloads: downloadFiles });
+              // Keep the creator's whole file list, not just the clicked file: mods
+              // are added once, so a truncated list here would leave the mod without
+              // a version picker for good. Only the clicked file is on disk.
+              addMod(modData, {
+                downloads:
+                  creatorFiles.length > 0 ? creatorFiles : downloadFiles,
+                selectedDownloads: downloadFiles,
+              });
 
               // Start direct download and installation using the provided URL
               toast.success("Starting 1-click mod install...");

@@ -393,6 +393,50 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
       delete state.enabledPlugins.themes;
     },
   },
+  {
+    to: 26,
+    label: "config-mod-single-file-to-versions",
+    apply: (state) => {
+      // configMod held one stashed gameinfo.gi as `{ fileName, size }`. A mod can
+      // ship several archives with a config each, so it now holds every stashed
+      // version. Reading `.variants` off the old shape throws during render, which
+      // takes the whole library down, so the old shape has to be converted rather
+      // than left for the readers to cope with.
+      const migrate = (mod: unknown) => {
+        if (!isPlainObject(mod)) return;
+        const legacy = mod.configMod;
+        if (!isPlainObject(legacy) || Array.isArray(legacy.variants)) return;
+
+        mod.configMod = {
+          variants: [
+            {
+              // Matches the Rust side, which adopts a flat pre-versions stash under
+              // this same name.
+              archiveName:
+                typeof legacy.fileName === "string"
+                  ? legacy.fileName
+                  : "gameinfo.gi",
+              size: typeof legacy.size === "number" ? legacy.size : 0,
+              isValid: true,
+              invalidReason: null,
+            },
+          ],
+          activeVariant: null,
+        };
+      };
+
+      if (Array.isArray(state.localMods)) {
+        for (const mod of state.localMods) migrate(mod);
+      }
+      if (isPlainObject(state.profiles)) {
+        for (const profile of Object.values(state.profiles)) {
+          if (!isPlainObject(profile)) continue;
+          if (!Array.isArray(profile.mods)) continue;
+          for (const mod of profile.mods) migrate(mod);
+        }
+      }
+    },
+  },
 ];
 
 const STEP_TARGET_VERSIONS: readonly number[] = MIGRATION_STEPS.map(

@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { useState } from "react";
 import { createLogger } from "@/lib/logger";
+import { hasVpks, resolveConfigMod } from "@/lib/mods/config-mods";
 import { usePersistedStore } from "@/lib/store";
+import { useConfigModInstall } from "./use-config-mod-install";
 import type {
   InstallableMod,
   LocalMod,
@@ -29,6 +31,16 @@ const toUnknownError = (error: unknown): ErrorKind => {
     return { kind: "unknown", message: error.message };
   }
   return { kind: "unknown", message: "" };
+};
+
+const toErrorKind = (error: unknown): ErrorKind => {
+  if (error instanceof Error) {
+    return { kind: "unknown", message: error.message };
+  }
+  if (typeof error === "object" && error !== null && "kind" in error) {
+    return error as ErrorKind;
+  }
+  return toUnknownError(error);
 };
 
 export type InstallWithCollectionOptions = {
@@ -59,6 +71,8 @@ export type UseInstallWithCollectionReturn = {
 
 const useInstallWithCollection = (): UseInstallWithCollectionReturn => {
   const getActiveProfile = usePersistedStore((state) => state.getActiveProfile);
+  const setConfigMod = usePersistedStore((state) => state.setConfigMod);
+  const installConfigModForMod = useConfigModInstall();
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [currentFileTree, setCurrentFileTree] = useState<ModFileTree | null>(
     null,
@@ -67,6 +81,38 @@ const useInstallWithCollection = (): UseInstallWithCollectionReturn => {
   const [currentMod, setCurrentMod] = useState<LocalMod | null>(null);
   const [currentOptions, setCurrentOptions] =
     useState<InstallWithCollectionOptions | null>(null);
+
+  // A mod whose only content is a gameinfo.gi has nothing for the file-tree selection
+  // below to act on.
+  const performConfigModInstallation = async (
+    mod: LocalMod,
+    options: InstallWithCollectionOptions,
+    variant?: string,
+  ): Promise<InstallableMod | null> => {
+    try {
+      const activeProfile = getActiveProfile();
+      const profileFolder = activeProfile?.folderName ?? null;
+
+      await installConfigModForMod(mod, profileFolder, variant);
+
+      const installed: InstallableMod = {
+        id: mod.remoteId,
+        name: mod.name,
+        installed_vpks: [],
+      };
+
+      options.onComplete(mod, installed);
+      return installed;
+    } catch (error: unknown) {
+      logger
+        .withMetadata({ modId: mod.remoteId })
+        .withError(error)
+        .error("Config mod installation failed");
+
+      options.onError(mod, toErrorKind(error));
+      return null;
+    }
+  };
 
   const performInstallation = async (
     mod: LocalMod,
@@ -135,20 +181,7 @@ const useInstallWithCollection = (): UseInstallWithCollectionReturn => {
         .withError(error)
         .error("Installation failed");
 
-      if (error instanceof Error) {
-        options.onError(mod, {
-          kind: "unknown",
-          message: error.message,
-        });
-      } else if (
-        typeof error === "object" &&
-        error !== null &&
-        "kind" in error
-      ) {
-        options.onError(mod, error as ErrorKind);
-      } else {
-        options.onError(mod, toUnknownError(error));
-      }
+      options.onError(mod, toErrorKind(error));
       return null;
     }
   };
@@ -163,6 +196,29 @@ const useInstallWithCollection = (): UseInstallWithCollectionReturn => {
 
       if (mod.status === ModStatus.Installed) {
         throw new Error("Mod is already installed!");
+      }
+
+      const configMod = await resolveConfigMod(mod).catch((error) => {
+        logger
+          .withMetadata({ modId: mod.remoteId })
+          .withError(error)
+          .warn("Failed to check whether the mod is a config mod");
+        return null;
+      });
+
+      if (configMod) {
+        if (!mod.configMod) {
+          setConfigMod(mod.remoteId, configMod);
+        }
+
+        // A config bundled with VPKs is applied alongside them rather than instead of
+        // them, so only a mod that ships nothing else skips the file-tree flow below.
+        if (!hasVpks(mod)) {
+          return await performConfigModInstallation(mod, options);
+        }
+
+        const activeProfile = getActiveProfile();
+        await installConfigModForMod(mod, activeProfile?.folderName ?? null);
       }
 
       // If a preselected file tree was provided, use it directly
@@ -350,20 +406,7 @@ const useInstallWithCollection = (): UseInstallWithCollectionReturn => {
         .withError(error)
         .error("Installation process failed");
 
-      if (error instanceof Error) {
-        options.onError(mod, {
-          kind: "unknown",
-          message: error.message,
-        });
-      } else if (
-        typeof error === "object" &&
-        error !== null &&
-        "kind" in error
-      ) {
-        options.onError(mod, error as ErrorKind);
-      } else {
-        options.onError(mod, toUnknownError(error));
-      }
+      options.onError(mod, toErrorKind(error));
       return null;
     }
   };

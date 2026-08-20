@@ -2,6 +2,7 @@ import { toast } from "@deadlock-mods/ui/components/sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ConfigModInfo,
   DownloadableMod,
   FontInfo,
   ModFileTree,
@@ -47,6 +48,11 @@ interface DownloadExtractingEvent {
 interface DownloadFontsFoundEvent {
   modId: string;
   fonts: FontInfo[];
+}
+
+interface ConfigModFoundEvent {
+  modId: string;
+  config: ConfigModInfo;
 }
 
 interface DownloadErrorEvent {
@@ -208,6 +214,26 @@ class DownloadManager {
       },
     );
 
+    // Emitted for downloads and for locally added mods alike, so the library can
+    // show the mod as a config mod before anyone tries to install it.
+    const unlistenConfigModFound = await listen<ConfigModFoundEvent>(
+      "config-mod-found",
+      (event) => {
+        const { variants } = event.payload.config;
+        logger
+          .withMetadata({
+            mod: event.payload.modId,
+            versions: variants.length,
+            usableVersions: variants.filter((variant) => variant.isValid)
+              .length,
+          })
+          .info("Config mod detected");
+        usePersistedStore
+          .getState()
+          .setConfigModVariants(event.payload.modId, event.payload.config);
+      },
+    );
+
     const unlistenPaused = await listen<DownloadPausedEvent>(
       "download-paused",
       (event) => {
@@ -239,6 +265,7 @@ class DownloadManager {
       unlistenExtracting,
       unlistenFileTree,
       unlistenFontsFound,
+      unlistenConfigModFound,
       unlistenPaused,
       unlistenResumed,
       unlistenError,
