@@ -2,4 +2,4 @@
 "@deadlock-mods/desktop": patch
 ---
 
-Keep variants switched off in Manage files disabled when reinstalling a mod
+Stop reinstalling a mod from re-enabling variants disabled in Manage files
